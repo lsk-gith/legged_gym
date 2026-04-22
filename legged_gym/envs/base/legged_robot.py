@@ -939,7 +939,22 @@ class LeggedRobot(BaseTask):
     def _get_env_origins(self):
         """ Sets environment origins. On rough terrain the origins are defined by the terrain platforms.
             Otherwise create a grid.
+            确定每个并行环境的初始位置（原点） 的方法。根据地形的不同类型（复杂地形 vs. 平面网格），它采用不同的策略来放置机器人，确保所有环境在空间上互不重叠且适应地形结构。
         """
+        # 复杂地形（高度场或三角网格）
+        # 地形由高度场（heightfield）或三角网格（trimesh）构成，每个环境占据一块独立的地形块（例如山坡、楼梯等）。每个地形块有其自己的中心原点（存储在 self.terrain.env_origins 中，形状为 (num_rows, num_cols, 3)）。
+        '''
+        设置标志：self.custom_origins = True 表明每个环境的位置需要基于地形块原点，并允许后续在重置时添加随机偏移。
+        确定地形难度等级范围：
+            max_init_level 指定初始地形等级的最大值（等级越高地形越复杂）。
+            如果启用了课程学习（curriculum=True），则使用 cfg.terrain.max_init_terrain_level（通常为 0 或较低值），让所有环境从简单地形开始。
+            如果没有课程学习，则使用最大行索引 num_rows-1，即直接使用全部地形难度。
+            随机分配地形等级：self.terrain_levels 为每个环境随机分配一个等级（0 到 max_init_level 之间的整数）。
+            分配地形类型（列）：self.terrain_types 将环境 ID 按顺序循环分配到不同的列（地形类型，例如不同纹理或障碍物模式），以实现多样化的地形组合。计算公式：terrain_types[i] = floor(i / (num_envs/num_cols))，确保每个地形列的负载大致均衡。
+            存储最大等级：self.max_terrain_level 用于课程学习（后续可逐步提高等级）。
+            获取地形块原点：self.terrain_origins 是从 Terrain 类中预先计算好的所有地形块的中心坐标（形状 (num_rows, num_cols, 3)），转换为 PyTorch 张量。
+            为每个环境选择原点：通过 self.terrain_origins[self.terrain_levels, self.terrain_types] 索引，得到每个环境的基准位置（z 坐标通常为地形表面高度）。
+        '''
         if self.cfg.terrain.mesh_type in ["heightfield", "trimesh"]:
             self.custom_origins = True
             self.env_origins = torch.zeros(self.num_envs, 3, device=self.device, requires_grad=False)
@@ -952,6 +967,17 @@ class LeggedRobot(BaseTask):
             self.terrain_origins = torch.from_numpy(self.terrain.env_origins).to(self.device).to(torch.float)
             self.env_origins[:] = self.terrain_origins[self.terrain_levels, self.terrain_types]
         else:
+            # 平面地形（或未使用复杂地形）
+            '''
+            设置标志：self.custom_origins = False，表示重置时不需要添加额外的地形偏移，但依然会加上 env_origins。
+                计算网格行列数：
+                num_cols ≈ sqrt(num_envs)（向下取整）。
+                num_rows = ceil(num_envs / num_cols)，确保能容纳所有环境。
+                生成网格点坐标：使用 torch.meshgrid 创建 (num_rows, num_cols) 的网格索引 xx 和 yy。
+                缩放间距：将网格索引乘以 cfg.env.env_spacing（例如 3.0 米），得到实际世界坐标。
+                展平并截取：xx.flatten()[:num_envs] 取前 num_envs 个值，按行优先顺序排列。
+                赋值：env_origins[:, 0] 为 x 坐标，env_origins[:, 1] 为 y 坐标，z 坐标设为 0（平面地面高度为 0）。
+            '''
             self.custom_origins = False
             self.env_origins = torch.zeros(self.num_envs, 3, device=self.device, requires_grad=False)
             # create a grid of robots
@@ -978,14 +1004,29 @@ class LeggedRobot(BaseTask):
     def _draw_debug_vis(self):
         """ Draws visualizations for dubugging (slows down simulation a lot).
             Default behaviour: draws height measurement points
+            作用是在 GUI 查看器中绘制出机器人感知到的地形高度测量点，帮助开发者直观地验证地形感知模块（measured_heights）是否正确工作。
         """
         # draw height lines
         if not self.terrain.cfg.measure_heights:
             return
         self.gym.clear_lines(self.viewer)
+        # 清除查看器上之前绘制的所有线条或图元，避免残影。
         self.gym.refresh_rigid_body_state_tensor(self.sim)
+        # 刷新刚体状态张量，确保 self.root_states 包含最新的机器人位姿（因为可视化需要当前时刻的基座位置和四元数）。
         sphere_geom = gymutil.WireframeSphereGeometry(0.02, 4, 4, None, color=(1, 1, 0))
+        # 创建一个线框球体几何体，半径 0.02 米，颜色为黄色 (1,1,0)。该几何体将用于在每个测量点处绘制一个球。
         for i in range(self.num_envs):
+            '''
+            base_pos：机器人在世界坐标系下的基座位置（x, y, z）。
+            heights：该环境当前测得的各采样点处的地形高度（相对于世界坐标系的高度值）。
+            height_points：
+                self.height_points[i]：预先存储的局部坐标系下的测量点相对位置（通常是机器人周围水平面上的一系列点，例如前向 1.0 米、侧向 0.5 米等）。形状为 (num_height_points, 2) 或 (num_height_points, 3)，仅包含 x, y 偏移。
+                quat_apply_yaw(self.base_quat[i].repeat(...), self.height_points[i])：
+                将局部偏移点旋转到世界坐标系，但只考虑机器人的偏航角（忽略横滚和俯仰）。这是因为高度测量通常只关心水平方向的地形起伏，与机器人倾斜无关。
+                结果 height_points 是每个采样点在世界坐标系下的 水平位置偏移（相对机器人基座的水平投影）。
+            计算世界坐标：x = height_points[j, 0] + base_pos[0]，y = height_points[j, 1] + base_pos[1]，z = heights[j]。即采样点的三维世界坐标。
+            绘制球体：在计算出的坐标处放置一个黄色小球。
+            '''
             base_pos = (self.root_states[i, :3]).cpu().numpy()
             heights = self.measured_heights[i].cpu().numpy()
             height_points = quat_apply_yaw(self.base_quat[i].repeat(heights.shape[0]), self.height_points[i]).cpu().numpy()
@@ -1001,13 +1042,20 @@ class LeggedRobot(BaseTask):
 
         Returns:
             [torch.Tensor]: Tensor of shape (num_envs, self.num_height_points, 3)
+            用于初始化地形高度测量采样点的方法。它根据配置中定义的 x、y 坐标网格，生成一组位于机器人基座坐标系（局部坐标系）下的三维点，后续通过射线投射或高度场查询获取这些点处的地形高度，从而构成地形感知观测。
         """
+        # 从配置中读取 measured_points_x 和 measured_points_y，它们通常是一维列表，例如：
+        # measured_points_x = [-0.8, -0.4, 0.0, 0.4, 0.8]（前向/后向偏移）
+        # measured_points_y = [-0.5, 0.0, 0.5]（侧向偏移）
         y = torch.tensor(self.cfg.terrain.measured_points_y, device=self.device, requires_grad=False)
         x = torch.tensor(self.cfg.terrain.measured_points_x, device=self.device, requires_grad=False)
+        # 将这些列表转换为 PyTorch 张量，并放置到指定设备（CPU/GPU）上。
         grid_x, grid_y = torch.meshgrid(x, y)
-
+        # 计算总采样点数量：len(x) * len(y)。
         self.num_height_points = grid_x.numel()
         points = torch.zeros(self.num_envs, self.num_height_points, 3, device=self.device, requires_grad=False)
+        # 创建输出张量，第三维初始为 0。
+        # 将展平后的 grid_x 和 grid_y 分别赋值给所有环境的 x、y 坐标。由于所有环境共享相同的采样点布局，因此直接广播（points[:, :, 0] 形状 (num_envs, num_height_points)，grid_x.flatten() 形状 (num_height_points,)，利用广播机制自动复制到每个环境）。
         points[:, :, 0] = grid_x.flatten()
         points[:, :, 1] = grid_y.flatten()
         return points
@@ -1024,12 +1072,34 @@ class LeggedRobot(BaseTask):
 
         Returns:
             [type]: [description]
+            根据机器人当前的基座位置和朝向，采样其周围预设点处的地形高度，用于构建非盲观测（non‑blind observations）。
+
+        函数作用
+            输入：env_ids（可选）——需要采样高度的环境子集（默认为 None，表示所有环境）。
+
+            输出：形状为 (num_envs, num_height_points) 的张量，每个元素表示对应环境、对应采样点处的地形高度（单位：米）。
+
+            核心逻辑：
+
+            如果地形是平面（mesh_type == 'plane'），直接返回全零高度（因为平面高度处处相同且已知，通常不需要测量）。
+            如果地形类型为 'none'，抛出异常（无法测量高度）。
+            否则，根据机器人的位姿将局部采样点变换到世界坐标系，然后从预先构建的高度场（self.height_samples）中通过双线性（取最小）插值获取地形高度。
         """
         if self.cfg.terrain.mesh_type == 'plane':
+            # 平面地形快速返回
             return torch.zeros(self.num_envs, self.num_height_points, device=self.device, requires_grad=False)
         elif self.cfg.terrain.mesh_type == 'none':
+            # 无效地形类型报错
             raise NameError("Can't measure height with terrain mesh type 'none'")
-
+        # 计算世界坐标系下的采样点
+        '''
+        self.height_points：形状 (num_envs, num_height_points, 3)，存储局部坐标系下的采样点（x, y, 0），由 _init_height_points 生成。
+        quat_apply_yaw：将局部采样点仅按机器人偏航角（忽略横滚/俯仰）旋转到世界水平方向。这样高度采样点会跟随机器人转向，但不会因地形倾斜而歪斜（符合通常的高度感知假设）。
+        self.base_quat：形状 (num_envs, 4)，机器人基座的四元数。
+        self.root_states[:, :3]：世界坐标系下的基座位置 (x, y, z)。
+        unsqueeze(1)：将位置从 (N, 3) 变为 (N, 1, 3)，以便与旋转后的采样点（(N, M, 3)）广播相加。
+        结果 points：形状 (N, M, 3)，每个采样点在世界坐标系中的三维坐标。
+        '''
         if env_ids:
             points = quat_apply_yaw(self.base_quat[env_ids].repeat(1, self.num_height_points), self.height_points[env_ids]) + (self.root_states[env_ids, :3]).unsqueeze(1)
         else:
@@ -1037,17 +1107,34 @@ class LeggedRobot(BaseTask):
 
         points += self.terrain.cfg.border_size
         points = (points/self.terrain.cfg.horizontal_scale).long()
+        # 将世界坐标转换为高度场索引
+        '''
+        border_size：地形网格的边界偏移量（通常为使采样点落在有效网格内而添加的偏移）。
+        horizontal_scale：地形网格的单元格间距（例如 0.1 米）。除以该值将世界坐标（米）转换为网格索引。
+        .long()：转换为整数索引。
+        展平：px 和 py 变成一维张量，长度为 num_envs * num_height_points。
+        边界裁剪：确保索引不超出高度场数组的边界（减 2 是为了留出插值所需的下一个像素）。
+        '''
         px = points[:, :, 0].view(-1)
         py = points[:, :, 1].view(-1)
         px = torch.clip(px, 0, self.height_samples.shape[0]-2)
         py = torch.clip(py, 0, self.height_samples.shape[1]-2)
-
+        # 从高度场采样并取最小高度
+        '''
+        self.height_samples：二维数组（形状 (H, W)），存储每个地形网格顶点的高度值（单位：米，未经垂直缩放）。
+        这里不是双线性插值，而是取三个相邻点（自身、右邻、下邻）的最小值。这是一种简化的“保守”高度估计，可能用于避免机器人脚部穿透地形（取最低点模拟脚底接触）。
+        实际实现中，通常采用双线性插值或双三次插值，但此代码选择取最小，可能是为了安全（确保机器人不会低于地形）或性能。
+        '''
         heights1 = self.height_samples[px, py]
         heights2 = self.height_samples[px+1, py]
         heights3 = self.height_samples[px, py+1]
         heights = torch.min(heights1, heights2)
         heights = torch.min(heights, heights3)
-
+        # 恢复形状并应用垂直缩放
+        '''
+        view：将一维结果重塑为 (num_envs, num_height_points)。
+        vertical_scale：地形高度数据的缩放因子（例如 1.0 表示原始高度，0.5 表示将地形高度减半）。最终高度单位为米。
+        '''
         return heights.view(self.num_envs, -1) * self.terrain.cfg.vertical_scale
 
     #------------ reward functions----------------
@@ -1120,6 +1207,18 @@ class LeggedRobot(BaseTask):
     def _reward_feet_air_time(self):
         # Reward long steps
         # Need to filter the contacts because the contact reporting of PhysX is unreliable on meshes
+        # 用于鼓励机器人在运动时产生较长的步态周期（即脚在空中停留时间足够长），从而促进自然、高效的行走或奔跑步态
+        ''''
+          1. 获取当前脚部接触力 > 1N → contact
+          2. contact_filt = contact OR last_contacts（滤波）
+          3. 更新 last_contacts = contact
+          4. first_contact = (feet_air_time > 0) AND contact_filt
+          5. feet_air_time += dt
+          6. 奖励 = sum( (feet_air_time - 0.5) * first_contact )
+          7. 若期望速度 < 0.1，奖励置零
+          8. feet_air_time *= NOT contact_filt（接触时清零）
+          9. 返回奖励
+        '''
         contact = self.contact_forces[:, self.feet_indices, 2] > 1.
         contact_filt = torch.logical_or(contact, self.last_contacts) 
         self.last_contacts = contact
