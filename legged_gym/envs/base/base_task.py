@@ -116,7 +116,7 @@ class BaseTask():
 
     def step(self, actions):
         raise NotImplementedError
-
+    # 显卡渲染机器动作
     def render(self, sync_frame_time=True):
         if self.viewer:
             # check for window closed
