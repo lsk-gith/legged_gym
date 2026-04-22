@@ -197,10 +197,16 @@ class PolicyExporterLSTM(torch.nn.Module):
     '''
     def __init__(self, actor_critic):
         super().__init__()
+        # 深拷贝 actor：避免后续修改影响原模型，同时确保可导出。
         self.actor = copy.deepcopy(actor_critic.actor)
+        # 保存循环标志：is_recurrent 保留原模型属性。
         self.is_recurrent = actor_critic.is_recurrent
+        # 深拷贝 LSTM 层：从 actor_critic.memory_a.rnn 中取出 LSTM 网络（通常是 nn.LSTM 或自定义 RNN 单元），
+        # 并移到 CPU（导出通常需要 CPU 张量）。
         self.memory = copy.deepcopy(actor_critic.memory_a.rnn)
         self.memory.cpu()
+        # 注册 buffer：为 LSTM 的隐藏状态 hidden_state 和细胞状态 cell_state 创建持久化的张量缓冲区。
+        # 这些状态会随模型一起保存，并且在每次 forward 中被更新，从而实现跨时间步的状态记忆。
         self.register_buffer(f'hidden_state', torch.zeros(self.memory.num_layers, 1, self.memory.hidden_size))
         self.register_buffer(f'cell_state', torch.zeros(self.memory.num_layers, 1, self.memory.hidden_size))
 
@@ -208,10 +214,14 @@ class PolicyExporterLSTM(torch.nn.Module):
         out, (h, c) = self.memory(x.unsqueeze(0), (self.hidden_state, self.cell_state))
         self.hidden_state[:] = h
         self.cell_state[:] = c
+        # 调用 LSTM：传入当前输入和之前存储的隐藏状态 (self.hidden_state, self.cell_state)，
+        # 得到输出 out（形状 (1, 1, hidden_size)）和新的状态 (h, c)。
         return self.actor(out.squeeze(0))
 
     @torch.jit.export
     def reset_memory(self):
+        # 将隐藏状态和细胞状态清零，用于开始新的 episode 时重置策略的记忆。
+        # @torch.jit.export 确保该方法在 TorchScript 中也可调用。
         self.hidden_state[:] = 0.
         self.cell_state[:] = 0.
  
@@ -219,6 +229,8 @@ class PolicyExporterLSTM(torch.nn.Module):
         os.makedirs(path, exist_ok=True)
         path = os.path.join(path, 'policy_lstm_1.pt')
         self.to('cpu')
+        # 使用 torch.jit.script 将整个模块编译为 TorchScript（比 trace 更适合控制流，这里用于保存内部状态更新逻辑）。
+        # 保存为 .pt 文件，可被 C++ 或 Python 的 LibTorch 加载，用于无 Python 环境的推理部署。
         traced_script_module = torch.jit.script(self)
         traced_script_module.save(path)
 
