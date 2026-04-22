@@ -191,6 +191,10 @@ def export_policy_as_jit(actor_critic, path):
 
 
 class PolicyExporterLSTM(torch.nn.Module):
+    '''
+        将一个带有 LSTM 记忆的强化学习策略网络（Actor-Critic 中的 Actor）导出为 TorchScript 格式，
+        便于后续的部署或推理（例如在 C++ 环境中加载使用）
+    '''
     def __init__(self, actor_critic):
         super().__init__()
         self.actor = copy.deepcopy(actor_critic.actor)
