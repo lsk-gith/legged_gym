@@ -53,12 +53,12 @@ def play(args):
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     obs = env.get_observations()
-    # load policy
+    # load policy　加载模型
     train_cfg.runner.resume = True
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
     policy = ppo_runner.get_inference_policy(device=env.device)
     
-    # export policy as a jit module (used to run it from C++)
+    # export policy as a jit module (used to run it from C++)　python中训练出来的模型，在从c＋＋中代码运行效率不高，转换之后可以在c++环境中推理
     if EXPORT_POLICY:
         path = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, 'exported', 'policies')
         export_policy_as_jit(ppo_runner.alg.actor_critic, path)
