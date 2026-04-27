@@ -36,10 +36,10 @@ import torch
 
 # Base class for RL tasks
 '''
-VecEnv是一个抽象基类,只要实现了所需的函数，任何类都可以作为 from rsl_rl.env import VecEnv中的VecEnv类型
+VecEnv是一个抽象基类,只要实现了所需的函数(get_observations)，任何类都可以作为rsl_rl.env中的VecEnv类型
 
-只要继承 BaseTask 并实现它的 step 和 reset_idx 抽象方法，得到的新类就天然具备了 VecEnv 所需要的全部接口和行为:
-    1.rsl_rl 通常期望reset() 只返回观测。 BaseTask.reset() 返回的是 (obs, privileged_obs)，但你可以让 privileged_obs = None 或简单地在 VecEnv 包装器中只取第一个返回值
+BaseTask 并实现它的 step 和 get_observations 抽象方法，任何类集成了BaseTask得到的新类就天然具备了 VecEnv 所需要的全部接口和行为:
+    1.get_observations() 返回self.obs_buf 返回自身的观测值，非特权变量
     2.step() 
         返回位置	   变量名	                含义	                                                       对应标准 RL step 中的
         0          self.obs_buf             基础观测（例如机器人关节、速度、指令等）                          obs
