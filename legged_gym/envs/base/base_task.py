@@ -35,6 +35,26 @@ import numpy as np
 import torch
 
 # Base class for RL tasks
+'''
+VecEnv是一个抽象基类,只要实现了所需的函数，任何类都可以作为 from rsl_rl.env import VecEnv中的VecEnv类型
+
+只要继承 BaseTask 并实现它的 step 和 reset_idx 抽象方法，得到的新类就天然具备了 VecEnv 所需要的全部接口和行为:
+    1.rsl_rl 通常期望reset() 只返回观测。 BaseTask.reset() 返回的是 (obs, privileged_obs)，但你可以让 privileged_obs = None 或简单地在 VecEnv 包装器中只取第一个返回值
+    2.step() 
+        返回位置	   变量名	                含义	                                                       对应标准 RL step 中的
+        0          self.obs_buf             基础观测（例如机器人关节、速度、指令等）                          obs
+        1	       self.privileged_obs_buf	特权观测（额外的真值信息，如地形高度、接触力等，                   无直接对应（额外输出）
+                                            主要用于 Asymmetric Actor-Critic 训练，让 Critic 获得更多信息）	
+        2	       self.rew_buf	            即时奖励	                                                   reward
+        3	       self.reset_buf	        环境终止标志（1 表示需要重置）	                               done
+        4	       self.extras	            额外信息（如 episode 统计、时间溢出标志等）	                   info
+        例如legged_robot.py中step返回值：return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras
+    3.所有数据都已是批量格式，无需额外转换。
+    
+BaseTask 之所以可以作为 VecEnv 的实现基类，是因为它已经定义了并行环境管理、设备分配、缓冲区、渲染框架，
+并且强制子类提供 step 和 reset_idx 这两个核心方法——这两个方法恰好构成了 VecEnv 所需的行为
+
+'''
 class BaseTask():
 
     def __init__(self, cfg, sim_params, physics_engine, sim_device, headless):
