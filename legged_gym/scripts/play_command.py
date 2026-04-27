@@ -38,29 +38,9 @@ from legged_gym.utils import get_args, export_policy_as_jit, task_registry, Logg
 import numpy as np
 import torch
 
-import keyboard
+cmd_state = {"x": 0.0, "y": 0.0, "yaw": 0.5}
 
 
-def get_keyboard_command(max_speed=0.8):
-    """
-    读取 WASD 键，返回线速度 (x, y)
-    W: 前进 (+x), S: 后退 (-x), A: 左移 (+y), D: 右移 (-y)
-    """
-    x, y = 0.0, 0.0
-    yaw = 0.0
-    if keyboard.is_pressed('w'):
-        x = max_speed
-    if keyboard.is_pressed('s'):
-        x = -max_speed
-    if keyboard.is_pressed('a'):
-        y = max_speed
-    if keyboard.is_pressed('d'):
-        y = -max_speed
-    if keyboard.is_pressed('z'):  # 左转
-        yaw = 1.0  # 适当大小，如 0.5~1.0
-    if keyboard.is_pressed('x'):  # 右转
-        yaw = -1.0
-    return x, y, yaw
 
 
 def play(args):
@@ -73,7 +53,6 @@ def play(args):
     env_cfg.noise.add_noise = False
     env_cfg.domain_rand.randomize_friction = False
     env_cfg.domain_rand.push_robots = False
-
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     obs = env.get_observations()
@@ -98,10 +77,9 @@ def play(args):
     camera_direction = np.array(env_cfg.viewer.lookat) - np.array(env_cfg.viewer.pos)
     img_idx = 0
     for i in range(10 * int(env.max_episode_length)):
-        cmd_x, cmd_y, yaw = get_keyboard_command(max_speed=0.8)
-        env.commands[:, 0] = cmd_x  # 线速度 x (前/后)
-        env.commands[:, 1] = cmd_y  # 线速度 y (左/右)
-        env.commands[:, 2] = yaw  # 角速度 yaw (z/x 左/右转)
+        env.commands[:, 0] = cmd_state["x"]
+        env.commands[:, 1] = cmd_state["y"]
+        env.commands[:, 2] = cmd_state["yaw"]
         actions = policy(obs.detach())
         obs, _, rews, dones, infos = env.step(actions.detach())
         if RECORD_FRAMES:
