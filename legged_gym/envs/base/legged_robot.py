@@ -683,16 +683,26 @@ class LeggedRobot(BaseTask):
         """ Initialize torch tensors which will contain simulation states and processed quantities
         """
         # get gym GPU state tensors
+
+        # Gym角色可以包含一个或多个刚体。所有角色都有一个根刚体。根状态张量保存仿真中所有角色根刚体的状态。
+        # 每个根刚体的状态使用13个浮点数表示，布局与GymRigidBodyState相同：3个浮点数表示位置，4个浮点数表示四元数，3个浮点数表示线速度，3个浮点数表示角速度。
+        # 获取基座状态张量
         actor_root_state = self.gym.acquire_actor_root_state_tensor(self.sim)
+        # 获取关节状态张量
         dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)
+        # 获取净接触力张量 形状为(num_rigid_bodies, 3)
         net_contact_forces = self.gym.acquire_net_contact_force_tensor(self.sim)
+
+        # 填充最新的关节，基座，接触力张量数据
         self.gym.refresh_dof_state_tensor(self.sim)
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self.gym.refresh_net_contact_force_tensor(self.sim)
 
         # create some wrapper tensors for different slices
+        # 要访问张量的内容，可以使用提供的gymtorch互操作模块将其包装在PyTorch张量对象中
         self.root_states = gymtorch.wrap_tensor(actor_root_state)
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
+
         self.dof_pos = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 0]
         self.dof_vel = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 1]
         self.base_quat = self.root_states[:, 3:7]
