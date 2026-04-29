@@ -58,6 +58,7 @@ BaseTask 之所以可以作为 VecEnv 的实现基类，是因为它已经定义
 class BaseTask():
 
     def __init__(self, cfg, sim_params, physics_engine, sim_device, headless):
+        # 创建单例gym对象 所有Gym API函数都通过gym的单例对象来访问
         self.gym = gymapi.acquire_gym()
 
         self.sim_params = sim_params
@@ -102,6 +103,7 @@ class BaseTask():
 
         # create envs, sim and viewer
         self.create_sim()
+        # 准备带有缓冲区分配的仿真
         self.gym.prepare_sim(self.sim)
 
         # todo: read from config

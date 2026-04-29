@@ -309,10 +309,16 @@ class LeggedRobot(BaseTask):
         """
         # 设置重力方向是z轴
         self.up_axis_idx = 2 # 2 for z, 1 for y -> adapt gravity accordingly
-        # 创建self.sim
+
+        # 创建sim对象  sim对象包含物理和图形上下文，允许您加载资源、创建环境并与模拟进行交互
+        #   函数的第一个参数是计算设备序号，用于选择物理模拟的 GPU。
+        #   第二个参数是图形设备序号，用于选择渲染的 GPU。在多 GPU 系统中，可以使用不同的设备来执行这些角色。对于不需要任何传感器渲染的无头模拟（没有查看器），可以将图形设备设置为 -1，这样就不会创建图形上下文
+        #   第三个参数指定要使用的物理引擎。目前可选参数为 SIM_PHYSX 或 SIM_FLEX(废弃)
+        #   第四个参数是仿真参数
         self.sim = self.gym.create_sim(self.sim_device_id, self.graphics_device_id, self.physics_engine, self.sim_params)
-        mesh_type = self.cfg.terrain.mesh_type
+
         # 根据地形类型创建地形
+        mesh_type = self.cfg.terrain.mesh_type
         if mesh_type in ['heightfield', 'trimesh']:
             self.terrain = Terrain(self.cfg.terrain, self.num_envs)
         if mesh_type=='plane':
@@ -690,10 +696,10 @@ class LeggedRobot(BaseTask):
         actor_root_state = self.gym.acquire_actor_root_state_tensor(self.sim)
         # 获取关节状态张量
         dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)
-        # 获取净接触力张量 形状为(num_rigid_bodies, 3)
+        # 获取单个环境的接触力张量 形状为(num_rigid_bodies, 3)
         net_contact_forces = self.gym.acquire_net_contact_force_tensor(self.sim)
 
-        # 填充最新的关节，基座，接触力张量数据
+        # 刷新最新的关节状态，基座状态，接触力张量数据
         self.gym.refresh_dof_state_tensor(self.sim)
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self.gym.refresh_net_contact_force_tensor(self.sim)
@@ -705,7 +711,7 @@ class LeggedRobot(BaseTask):
 
         self.dof_pos = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 0]
         self.dof_vel = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 1]
-        self.base_quat = self.root_states[:, 3:7]
+        self.base_quat = self.root_states[:, 3:7] # 基座四元数
 
         self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(self.num_envs, -1, 3) # shape: num_envs, num_bodies, xyz axis
 
@@ -733,7 +739,7 @@ class LeggedRobot(BaseTask):
             self.height_points = self._init_height_points()
         self.measured_heights = 0
 
-        # joint positions offsets and PD gains
+        # joint positions offsets and PD gains 关节位置偏置，以及PD控制器
         self.default_dof_pos = torch.zeros(self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
         for i in range(self.num_dofs):
             name = self.dof_names[i]
@@ -755,7 +761,10 @@ class LeggedRobot(BaseTask):
     def _prepare_reward_function(self):
         """ Prepares a list of reward functions, whcih will be called to compute the total reward.
             Looks for self._reward_<REWARD_NAME>, where <REWARD_NAME> are names of all non zero reward scales in the cfg.
-        奖励函数初始化的核心方法。它根据配置文件中的奖励缩放系数（reward_scales），动态地筛选出需要计算的奖励项，将其名称映射为对应的成员方法（如 _reward_lin_vel），并准备好用于累积每个 episode 各奖励项总和的字典。
+        奖励函数初始化的核心方法。
+        它根据配置文件中的奖励缩放系数（reward_scales），动态地筛选出需要计算的奖励项，
+        将其名称映射为对应的成员方法（如 _reward_lin_vel），
+        并准备好用于累积每个 episode 各奖励项总和的字典。
         """
         # remove zero scales + multiply non-zero ones by dt
         # 移除零缩放系数，并将非零系数乘以仿真步长 dt
@@ -774,13 +783,16 @@ class LeggedRobot(BaseTask):
                 continue
             self.reward_names.append(name)
             name = '_reward_' + name
-            # 获取方法对象：getattr(self, name) 从当前实例中获取名为 name 的方法。这些方法必须已在环境类中定义（例如 def _reward_lin_vel(self): ...），并返回形状为 (num_envs,) 的奖励张量
+            # 获取方法对象：getattr(self, name) 从当前实例中获取名为 name 的方法。
+            # 这些方法必须已在环境类中定义（例如 def _reward_lin_vel(self): ...），
+            # 并返回形状为 (num_envs,) 的奖励张量
             self.reward_functions.append(getattr(self, name))
 
         # reward episode sums 初始化 episode 累计奖励字典
         '''
         为每个奖励项（name）创建一个形状为 (num_envs,) 的全零张量，用于累计每个环境中当前 episode 的该奖励项的总和。
-        这些张量会随着每个 step 累加（在 compute_reward 中执行 self.episode_sums[name] += rew），并在环境重置时（reset_idx）记录平均值并清零。
+        这些张量会随着每个 step 累加（在 compute_reward 中执行 self.episode_sums[name] += rew），
+        并在环境重置时（reset_idx）记录平均值并清零。
         requires_grad=False：累计奖励仅用于监控，不参与梯度计算
         '''
         self.episode_sums = {name: torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
@@ -846,22 +858,24 @@ class LeggedRobot(BaseTask):
         asset_root = os.path.dirname(asset_path)
         asset_file = os.path.basename(asset_path)
 
-        asset_options = gymapi.AssetOptions()
-        asset_options.default_dof_drive_mode = self.cfg.asset.default_dof_drive_mode
-        asset_options.collapse_fixed_joints = self.cfg.asset.collapse_fixed_joints
-        asset_options.replace_cylinder_with_capsule = self.cfg.asset.replace_cylinder_with_capsule
-        asset_options.flip_visual_attachments = self.cfg.asset.flip_visual_attachments
-        asset_options.fix_base_link = self.cfg.asset.fix_base_link
-        asset_options.density = self.cfg.asset.density
-        asset_options.angular_damping = self.cfg.asset.angular_damping
-        asset_options.linear_damping = self.cfg.asset.linear_damping
-        asset_options.max_angular_velocity = self.cfg.asset.max_angular_velocity
-        asset_options.max_linear_velocity = self.cfg.asset.max_linear_velocity
-        asset_options.armature = self.cfg.asset.armature
-        asset_options.thickness = self.cfg.asset.thickness
-        asset_options.disable_gravity = self.cfg.asset.disable_gravity
+        # AssetOptions可以向资源导入器传递额外的信息
         # 设置各种 asset_options（驱动器模式、关节合并、胶囊替换、密度、阻尼等）
+        asset_options = gymapi.AssetOptions()
+        asset_options.default_dof_drive_mode = self.cfg.asset.default_dof_drive_mode # 驱动器模式
+        asset_options.collapse_fixed_joints = self.cfg.asset.collapse_fixed_joints #关节类型
+        asset_options.replace_cylinder_with_capsule = self.cfg.asset.replace_cylinder_with_capsule # 胶囊替换
+        asset_options.flip_visual_attachments = self.cfg.asset.flip_visual_attachments #是否翻转视觉网格的 Y 轴到 Z 轴,旋转所有视觉（Visual）Mesh的坐标系, 这通常用于解决因坐标轴定义不一致（例如，仿真环境和原始3D建模软件中Y轴与Z轴指向不同）而导致的视觉模型显示错误问题
+        asset_options.fix_base_link = self.cfg.asset.fix_base_link #是否固定基座（用于调试）
+        asset_options.density = self.cfg.asset.density # 刚体密度
+        asset_options.angular_damping = self.cfg.asset.angular_damping # 角阻尼
+        asset_options.linear_damping = self.cfg.asset.linear_damping # 线阻尼
+        asset_options.max_angular_velocity = self.cfg.asset.max_angular_velocity # 最大角速度
+        asset_options.max_linear_velocity = self.cfg.asset.max_linear_velocity # 最大线速度
+        asset_options.armature = self.cfg.asset.armature # 关节的电机惯量（转子等效转动惯量）
+        asset_options.thickness = self.cfg.asset.thickness # 碰撞体的厚度（用于胶囊体等）
+        asset_options.disable_gravity = self.cfg.asset.disable_gravity # 是否禁用重力。
         robot_asset = self.gym.load_asset(self.sim, asset_root, asset_file, asset_options)
+
         # 获取资产的基本信息
         # 获取机器人的自由度数量、刚体数量。
         # 获取默认的 DOF 属性（位置限位、速度限位、力矩限位）和刚体形状属性（摩擦、弹性等），这些将作为后续每个环境修改的基础。
@@ -890,15 +904,19 @@ class LeggedRobot(BaseTask):
         '''
         将配置中的初始位置、四元数、线速度、角速度拼接成一个长度为 13 的列表。
         转换为 PyTorch 张量保存为 self.base_init_state。
-        创建 start_pose 变换，仅设置位置（姿态在创建 actor 时可通过 start_pose.rot 设置，但这里未设置，默认单位四元数？实际上在后面创建 actor 时，
         start_pose 只包含了位置，姿态可能由 URDF 中的默认关节角度决定？通常需要设置初始四元数，但此处可能漏掉了？
         实际上 base_init_state 包含四元数，但在 start_pose 中未使用，而是在创建 actor 后通过 set_actor_root_state_tensor 设置？
         检查 _reset_root_states 确实会设置完整状态。因此这里仅用位置作为初始摆放。）
         '''
+        #base_init_state_list=机器人基座的初始位置(x,y,z)[m]+基座初始姿态四元数(x,y,z,w)+初始线速度(x,y,z)[m/s]+角速度 (x,y,z)[rad/s]
         base_init_state_list = self.cfg.init_state.pos + self.cfg.init_state.rot + self.cfg.init_state.lin_vel + self.cfg.init_state.ang_vel
         self.base_init_state = to_torch(base_init_state_list, device=self.device, requires_grad=False)
-        start_pose = gymapi.Transform()
-        start_pose.p = gymapi.Vec3(*self.base_init_state[:3])
+        start_pose = gymapi.Transform() # 系统中的变换
+
+        # 设置初始位置信息
+        # * 将这个张量解包为三个单独的参数传递给 Vec3 构造函数 所以结果是一个 gymapi.Vec3 对象，其 x, y, z 分量分别等于初始位置的 x, y, z。
+        start_pose.p = gymapi.Vec3(*self.base_init_state[:3]) # *self.base_init_state[:3] 使用了 Python 的 * 解包操作符（unpacking operator）。self.base_init_state[:3] 取出张量的前三个元素（位置 x, y, z）
+
         # 获取环境原点并创建每个环境
         '''
         _get_env_origins 计算每个环境的基准原点（例如地形块的中心点）。
@@ -911,37 +929,55 @@ class LeggedRobot(BaseTask):
         self.actor_handles = []
         self.envs = []
         for i in range(self.num_envs):
-            # create env instance
+            # create env instance 创建环境实例
+            #   param1 (Sim) – Simulation Handle.（仿真句柄。）
+            #   param2 (isaacgym.gymapi.Vec3) 环境空间的下界
+            #   param3 (isaacgym.gymapi.Vec3) 环境空间的上界
+            #   param4 (int) 一行中环境的数据，一般是环境数量的开根号
             env_handle = self.gym.create_env(self.sim, env_lower, env_upper, int(np.sqrt(self.num_envs)))
             pos = self.env_origins[i].clone()
+            # 随机初始化：x,y的位置，不要让所有的机器人在一起
             pos[:2] += torch_rand_float(-1., 1., (2,1), device=self.device).squeeze(1)
-            start_pose.p = gymapi.Vec3(*pos)
+            start_pose.p = gymapi.Vec3(*pos) # 设置初始位置
             # 设置刚体形状属性、创建 actor、设置 DOF 属性、设置刚体属性
             '''
-            形状属性：调用 _process_rigid_shape_props（可随机化摩擦）修改属性，然后应用到资产上（注意：set_asset_rigid_shape_properties 会影响该资产后续创建的所有 actor，因此必须在每次创建 actor 前设置，否则所有环境会共享同一属性。这里的设计是每个环境独立调用，确保每个环境有独立的摩擦系数）。
+            形状属性：调用 _process_rigid_shape_props（可随机化摩擦）修改属性，然后应用到机器关节上（注意：set_asset_rigid_shape_properties 会影响该机器关节后续创建的所有 actor，因此必须在每次创建 actor 前设置，否则所有环境会共享同一属性。这里的设计是每个环境独立调用，确保每个环境有独立的摩擦系数）。
             创建 actor：create_actor 将机器人实例添加到环境 env_handle 中，使用修改后的资产和起始位姿。参数 self.cfg.asset.self_collisions 控制是否启用自碰撞。
             DOF 属性：调用 _process_dof_props（可修改关节限位、刚度、阻尼等），然后通过 set_actor_dof_properties 应用到该 actor。
             刚体属性：获取当前 actor 的刚体属性（质量、质心、惯性），调用 _process_rigid_body_props（可随机化基座质量），然后通过 set_actor_rigid_body_properties 写回，并设置 recomputeInertia=True 让仿真器根据新质量重新计算惯性张量。
             '''
+            # 设置刚体形状属性
             rigid_shape_props = self._process_rigid_shape_props(rigid_shape_props_asset, i)
             self.gym.set_asset_rigid_shape_properties(robot_asset, rigid_shape_props)
+
+            # 创建驱动器 actor
             actor_handle = self.gym.create_actor(env_handle, robot_asset, start_pose, self.cfg.asset.name, i, self.cfg.asset.self_collisions, 0)
+
+            #关节属性 _process_dof_props（可修改关节限位、刚度、阻尼等）
             dof_props = self._process_dof_props(dof_props_asset, i)
+
+            # 将关节属性设置到执行器中
             self.gym.set_actor_dof_properties(env_handle, actor_handle, dof_props)
+
+            # 获取刚体的属性 获取当前 actor 的刚体属性（质量、质心、惯性）
             body_props = self.gym.get_actor_rigid_body_properties(env_handle, actor_handle)
-            body_props = self._process_rigid_body_props(body_props, i)
+            body_props = self._process_rigid_body_props(body_props, i) # 随机关节体的制造误差，模拟真实制造环境的误差
+
+            #将刚体属性body_props，执行器，以及recomputeInertia=True 让仿真器根据新质量重新计算惯性张量 并写到执行器中
             self.gym.set_actor_rigid_body_properties(env_handle, actor_handle, body_props, recomputeInertia=True)
             self.envs.append(env_handle)
             self.actor_handles.append(actor_handle)
+
         # 存储关键刚体的索引 由于所有环境的机器人具有相同的刚体名称，只需在第一个环境中查找刚体句柄，这些句柄在所有环境中是一致的（因为 asset 相同，创建顺序相同）。因此可以安全地将这些索引用于所有环境的批量操作（例如获取脚部接触力）。
+        # 脚接触力
         self.feet_indices = torch.zeros(len(feet_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(feet_names)):
             self.feet_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], feet_names[i])
-
+        # 惩罚接触指数
         self.penalised_contact_indices = torch.zeros(len(penalized_contact_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(penalized_contact_names)):
             self.penalised_contact_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], penalized_contact_names[i])
-
+        # 接触力终止阈值
         self.termination_contact_indices = torch.zeros(len(termination_contact_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(termination_contact_names)):
             self.termination_contact_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], termination_contact_names[i])
